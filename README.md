@@ -19,7 +19,8 @@ Needs Rust >= 1.75. `Cargo.lock` pins dependencies that work on 1.75 (older dist
 | `swp-weightd pull`  | pull only a stage's tensors into a normal local safetensors shard (+ config/tokenizer files); engines load it unchanged |
 | `swp-plan`          | pick layer ranges per node (tiers: VRAM/RAM/...), bandwidth-bound estimate; emits plan.json that `pull --plan --node` consumes |
 | `swp-mockstage`     | deterministic toy stage server (bit-exact across languages) for adapter conformance |
-| `swp-drive`         | reference coordinator + `--selftest` |
+| `swp-drive`         | reference coordinator, `--selftest`, and `--bench` (per-stage time + prefill/decode tok/s) and `--probe` (link RTT/throughput + a verdict on whether boundary quantisation is worth it) |
+| `python/bench.py`   | same per-stage timing/tok/s accounting for a Python coordinator (`Trace`) |
 | `python/swp.py`     | stdlib Python client (framing, handshake+auth, stage RPCs); `python/test_interop.py` checks it against Rust |
 
 ## Typical flow
@@ -35,3 +36,17 @@ Needs Rust >= 1.75. `Cargo.lock` pins dependencies that work on 1.75 (older dist
 * `pull` writes safetensors only; GGUF is index/serve only.
 * Authentication is a keyed-hash challenge, not encryption. Use on a direct cable / trusted LAN.
 * Thread-per-connection, single-user scale. Planner estimates rank placements; they are not predictions.
+
+## Benchmark: where does the time go, and tokens/s
+    swp-mockstage --listen 0.0.0.0:7801 --sim-base-ms 3 --sim-row-us 10     # toy stage with simulated compute
+    swp-drive --bench --stages a:7801,b:7802 --bounds 4 --prompt-len 256 --n 64 --chunk 64 --json bench.json
+Per stage: compute (the stage's own `stage_ms`), wire+queue (round trip minus compute), coordinator time; for prefill and
+decode separately, with tok/s, p50/p95 token latency and time to first token. Real stages must sync their device before
+reading their clock, or compute is under-reported and the gap shows up as wire+queue.
+
+## Probe your link (works against any SWP endpoint that echoes PING: mockstage, weightd, real stages)
+    swp-drive --probe --stages strix-tb:7801 --hidden 6144 --decode-ms 35 --prefill-tok-s 3000
+    swp-drive --probe --stages strix-tb:7801 --assume-mbps 115     # what-if: a 1 GbE link
+Reports RTT, decode-shaped echoes per dtype, sustained throughput, and a decode / prefill verdict. Pass your real
+`--hidden`; the default is 4096 (GLM-5.3-Flash as reported by a reviewer; check your config.json).
+`--assume-rtt-us` and `--assume-mbps` run what-ifs.

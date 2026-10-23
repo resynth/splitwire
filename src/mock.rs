@@ -11,6 +11,11 @@ use std::collections::HashMap;
 use std::io;
 use std::net::TcpStream;
 
+use std::sync::atomic::{AtomicU64, Ordering};
+/// Simulated per-forward compute (microseconds): base + per_row * rows. Lets benchmarks be exercised without GPUs.
+pub static SIM_BASE_US: AtomicU64 = AtomicU64::new(0);
+pub static SIM_ROW_US: AtomicU64 = AtomicU64::new(0);
+
 pub const HIDDEN: usize = 16;
 pub const VOCAB: usize = 64;
 pub const LAYERS: usize = 8;
@@ -123,6 +128,10 @@ fn do_forward(st: &mut StageState, h: &Value, payload: &[u8]) -> Result<(Value, 
         bytes_to_f32s(payload).chunks(st.hidden).map(|c| c.to_vec()).collect()
     };
     let out = st.run_layers(start, rows);
+    let sim = SIM_BASE_US.load(Ordering::Relaxed) + SIM_ROW_US.load(Ordering::Relaxed) * n as u64;
+    if sim > 0 {
+        std::thread::sleep(std::time::Duration::from_micros(sim));
+    }
     let ms = t0.elapsed().as_secs_f64() * 1e3;
     if st.has_head {
         let want = h["want"].as_str().unwrap_or("token");
